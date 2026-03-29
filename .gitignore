@@ -8,3 +8,7 @@ __pycache__/
 .eggs/
 .env
 .venv/
+
+# 爬虫运行产物（各环境本地生成，避免 pull 与服务器冲突）
+crypto_news.json
+report.html
