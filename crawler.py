@@ -283,7 +283,8 @@ def svg_volume_bars(volumes: List[float], color: str, title: str = "") -> str:
             f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{max(bh, 1.0):.1f}" fill="{html.escape(color)}" opacity="0.78" rx="1"/>'
         )
     cap = f'<text x="{W/2:.0f}" y="11" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.85">{html.escape(title)}</text>'
-    return f'<svg class="vol-bars-svg" viewBox="0 0 {W} {Hbar}" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">{cap}{"".join(rects)}<text x="{pad_l:.0f}" y="{Hbar-2:.0f}" font-size="8" fill="currentColor" opacity="0.65">按日成交额（USD，CoinGecko 汇总）</text></svg>'
+    foot = f'<text x="{W/2:.0f}" y="{Hbar-2:.0f}" text-anchor="middle" font-size="8" fill="currentColor" opacity="0.65">按日成交额（USD）</text>'
+    return f'<svg class="vol-bars-svg" viewBox="0 0 {W} {Hbar}" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">{cap}{"".join(rects)}{foot}</svg>'
 
 
 def holt_linear_forecast(
@@ -330,23 +331,30 @@ def html_tradingview_charts(
             (chart_by_coin or {}).get(cg_id), last_n=14
         )
         vol_svg = (
-            svg_volume_bars(vol_series, "#2b8a3e" if "BTC" in label else ("#5c7cfa" if "ETH" in label else "#9c36b5"), "近14日每日成交额（柱高∝成交额）")
+            svg_volume_bars(
+                vol_series,
+                "#2b8a3e" if "BTC" in label else ("#5c7cfa" if "ETH" in label else "#9c36b5"),
+                "近14日成交额（柱高∝量）",
+            )
             if vol_series
             else '<p class="muted small">日度成交量序列暂不可用。</p>'
         )
         blocks.append(
             f"""
         <div class="chart-wrap">
-            <div class="chart-title">{html.escape(label)}</div>
-            <p class="chart-tv-note"><a href="{html.escape(tv_public)}" target="_blank" rel="noopener">在 TradingView 打开完整图表</a>（部分区域嵌入页可能只显示迷你价线，属 CDN/地区限制）</p>
-            <iframe class="tv-iframe tv-iframe-advanced" src="{html.escape(src)}" height="280" width="100%" style="border:0;border-radius:8px;min-height:240px" loading="lazy" title="TradingView {html.escape(label)}"></iframe>
+            <div class="chart-card-head">
+              <div class="chart-title">{html.escape(label)}</div>
+              <a class="chart-tv-link" href="{html.escape(tv_public)}" target="_blank" rel="noopener">TradingView 大图 ↗</a>
+            </div>
+            <div class="chart-tv-box">
+              <iframe class="tv-iframe tv-iframe-advanced" src="{html.escape(src)}" height="300" width="100%" style="border:0;border-radius:8px" loading="lazy" title="TradingView {html.escape(label)}"></iframe>
+            </div>
             <div class="chart-vol-local">{vol_svg}</div>
-            <div class="chart-vol-cg"><strong>24h 成交额（全球约）</strong>（CoinGecko markets）：{html.escape(vol_line)}</div>
-            <div class="chart-hint">上方嵌入为 TradingView；<strong>彩色柱形图为本站用 CoinGecko 原始数据在本地绘制的成交量</strong>，与交易所逐笔量可能不一致，仅作相对对比。</div>
-            <div class="chart-credit">嵌入：TradingView · 成交量柱：CoinGecko <code>market_chart.total_volumes</code></div>
+            <div class="chart-vol-cg">24h 成交额（约）<span class="vol-num">{html.escape(vol_line)}</span></div>
+            <p class="chart-hint-mini">柱图为 CoinGecko 日度汇总，与交易所逐笔可能有差异。</p>
         </div>"""
         )
-    return f'<section class="charts-section"><h2 class="section-title">主要加密资产 · 价图（引用）+ 成交量（本地绘制）</h2><div class="chart-row">{"".join(blocks)}</div></section>'
+    return f'<section class="charts-section"><h2 class="section-title">主要加密资产 · 价图 + 成交量</h2><div class="chart-row">{"".join(blocks)}</div></section>'
 
 
 def _closes_by_day_utc(prices_raw: List) -> List[float]:
@@ -808,24 +816,30 @@ class CryptoNewsCrawler:
             :root {{ --bg: #121212; --card-bg: #1e1e1e; --text: #e0e0e0; --accent: #375a7f; --muted: #a0a0a0; }}
         }}
         body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; margin: 0; padding: 20px; }}
-        .container {{ max-width: 960px; margin: 0 auto; }}
+        .container {{ max-width: 1180px; margin: 0 auto; }}
         header {{ border-bottom: 2px solid var(--accent); margin-bottom: 30px; padding-bottom: 10px; }}
         h1 {{ margin: 0; font-size: 1.8rem; }}
         .stats {{ font-size: 0.9rem; color: var(--muted); }}
         .section-title {{ font-size: 1.25rem; margin: 0 0 1rem; border-left: 4px solid var(--accent); padding-left: 0.5rem; }}
         .charts-section {{ margin-bottom: 2rem; }}
-        .chart-row {{ display: flex; flex-direction: row; flex-wrap: nowrap; gap: 8px; width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }}
-        .chart-row .chart-wrap {{ flex: 1 1 0; min-width: 200px; }}
-        .chart-wrap {{ background: var(--card-bg); border-radius: 12px; padding: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }}
-        .chart-tv-note {{ font-size: 0.78rem; margin: 0 0 8px; }}
-        .chart-tv-note a {{ color: var(--accent); }}
-        .chart-vol-local {{ margin-top: 10px; border-top: 1px dashed rgba(128,128,128,0.25); padding-top: 8px; }}
-        .vol-bars-svg {{ width: 100%; height: auto; display: block; max-width: 100%; }}
-        .chart-title {{ font-weight: 600; margin-bottom: 8px; font-size: 0.95rem; }}
-        .chart-vol-cg {{ font-size: 0.82rem; margin-top: 8px; padding: 6px 8px; background: rgba(0,123,255,0.07); border-radius: 6px; border: 1px solid rgba(0,123,255,0.18); }}
-        .chart-hint {{ font-size: 0.72rem; color: var(--muted); margin-top: 6px; line-height: 1.35; }}
-        .chart-credit {{ font-size: 0.7rem; color: var(--muted); margin-top: 4px; }}
-        .chart-credit a {{ color: var(--accent); }}
+        .chart-row {{ display: grid; grid-template-columns: 1fr; gap: 1.25rem; width: 100%; align-items: start; }}
+        @media (min-width: 720px) {{
+            .chart-row {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+        }}
+        @media (min-width: 1100px) {{
+            .chart-row {{ grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.35rem; }}
+        }}
+        .chart-wrap {{ background: var(--card-bg); border-radius: 14px; padding: 14px 16px 16px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); border: 1px solid rgba(128,128,128,0.12); display: flex; flex-direction: column; gap: 0; min-width: 0; }}
+        .chart-card-head {{ display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }}
+        .chart-title {{ font-weight: 600; font-size: 1rem; margin: 0; }}
+        .chart-tv-link {{ font-size: 0.8rem; color: var(--accent); text-decoration: none; white-space: nowrap; }}
+        .chart-tv-link:hover {{ text-decoration: underline; }}
+        .chart-tv-box {{ width: 100%; min-height: 300px; border-radius: 10px; overflow: hidden; background: rgba(0,0,0,0.03); }}
+        .chart-vol-local {{ margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(128,128,128,0.18); text-align: center; }}
+        .vol-bars-svg {{ width: 100%; height: auto; display: block; max-width: 100%; margin: 0 auto; }}
+        .chart-vol-cg {{ font-size: 0.85rem; margin-top: 10px; padding: 8px 10px; background: rgba(0,123,255,0.06); border-radius: 8px; text-align: center; color: var(--muted); }}
+        .chart-vol-cg .vol-num {{ display: inline-block; font-weight: 600; color: var(--text); margin-left: 6px; }}
+        .chart-hint-mini {{ font-size: 0.72rem; color: var(--muted); margin: 8px 0 0; line-height: 1.4; text-align: center; }}
         .forecast-section {{ margin-bottom: 2rem; }}
         .forecast-note-box {{ background: rgba(13,110,253,0.08); border: 1px solid rgba(13,110,253,0.25); border-radius: 8px; padding: 10px 14px; margin-bottom: 10px; }}
         .forecast-legal {{ margin: 0; font-size: 0.88rem; }}
