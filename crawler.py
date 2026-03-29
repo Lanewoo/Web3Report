@@ -6,7 +6,7 @@ import datetime
 import html
 import logging
 from typing import List, Dict, Optional, Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 from email.utils import parsedate_to_datetime
 from urllib3.util.retry import Retry
 
@@ -55,11 +55,19 @@ SOURCES = [
     {
         "name": "The Block",
         "url": "https://www.theblock.co/rss.xml",
+        # 备用：部分机房对主域名 403，旧域名有时仍可拉取（任一成功即停）
+        "urls": [
+            "https://www.theblock.co/rss.xml",
+            "https://www.theblockcrypto.com/rss.xml",
+        ],
         "type": "rss",
-    }
+    },
 ]
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
 MAX_STORED_NEWS = 1000
 DATA_FILE = "crypto_news.json"
 REPORT_FILE = "report.html"
@@ -108,6 +116,21 @@ def get_session():
     session.mount("http://", adapter)
     session.headers.update({"User-Agent": USER_AGENT})
     return session
+
+
+def rss_request_headers(feed_url: str) -> Dict[str, str]:
+    """RSS 请求补充头：部分站点（如 Cloudflare 后）对无 Accept/Referer 的数据中心请求返回 403。"""
+    try:
+        p = urlparse(feed_url)
+        origin = f"{p.scheme}://{p.netloc}/"
+    except Exception:
+        origin = ""
+    return {
+        "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": origin,
+        "Cache-Control": "no-cache",
+    }
 
 
 def fetch_market_snapshot(session: requests.Session) -> Dict[str, Any]:
@@ -686,41 +709,67 @@ class CryptoNewsCrawler:
         return []
 
     def fetch_rss_source(self, source: Dict) -> List[Dict]:
-        """抓取单个 RSS 源。"""
+        """抓取单个 RSS 源；支持 urls 列表依次重试。"""
         logger.info("Fetching %s...", source["name"])
-        try:
-            response = self.session.get(source["url"], timeout=15)
-            response.raise_for_status()
-            # 使用 lxml-xml 加速解析
-            soup = BeautifulSoup(response.content, "lxml-xml")
-            items = soup.find_all("item")
+        feed_urls = source.get("urls") or [source["url"]]
+        last_err: Optional[Exception] = None
 
-            new_articles = []
-            for item in items:
-                link = item.link.text.strip() if item.link else ""
-                if not link: continue
+        for feed_url in feed_urls:
+            try:
+                merged = {**dict(self.session.headers), **rss_request_headers(feed_url)}
+                response = self.session.get(feed_url, timeout=15, headers=merged)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.content, "lxml-xml")
+                items = soup.find_all("item")
 
-                title = item.title.text.strip() if item.title else "无标题"
-                pub_date = item.pubDate.text.strip() if item.pubDate else ""
-                
-                # 提取并清理摘要
-                raw_desc = item.description.text if item.description else ""
-                desc_soup = BeautifulSoup(raw_desc, "html.parser")
-                clean_desc = desc_soup.get_text(separator=" ", strip=True).replace("\xa0", " ")
-                summary = clean_desc[:250] + "..." if len(clean_desc) > 250 else clean_desc
+                new_articles = []
+                for item in items:
+                    link = item.link.text.strip() if item.link else ""
+                    if not link:
+                        continue
 
-                new_articles.append({
-                    "source": source["name"],
-                    "title": title,
-                    "link": link,
-                    "published": pub_date,
-                    "summary": summary,
-                    "fetched_at": datetime.datetime.now().isoformat(),
-                })
-            return new_articles
-        except Exception as e:
-            logger.error("Fetch failed for %s: %s", source["name"], e)
-            return []
+                    title = item.title.text.strip() if item.title else "无标题"
+                    pub_date = item.pubDate.text.strip() if item.pubDate else ""
+
+                    raw_desc = item.description.text if item.description else ""
+                    desc_soup = BeautifulSoup(raw_desc, "html.parser")
+                    clean_desc = desc_soup.get_text(separator=" ", strip=True).replace(
+                        "\xa0", " "
+                    )
+                    summary = (
+                        clean_desc[:250] + "..."
+                        if len(clean_desc) > 250
+                        else clean_desc
+                    )
+
+                    new_articles.append(
+                        {
+                            "source": source["name"],
+                            "title": title,
+                            "link": link,
+                            "published": pub_date,
+                            "summary": summary,
+                            "fetched_at": datetime.datetime.now().isoformat(),
+                        }
+                    )
+                if feed_url != feed_urls[0]:
+                    logger.info(
+                        "Used fallback RSS URL for %s: %s",
+                        source["name"],
+                        feed_url,
+                    )
+                return new_articles
+            except Exception as e:
+                last_err = e
+                logger.warning(
+                    "RSS attempt failed for %s (%s): %s",
+                    source["name"],
+                    feed_url,
+                    e,
+                )
+
+        logger.error("Fetch failed for %s: %s", source["name"], last_err)
+        return []
 
     def run_crawl(self):
         """执行全量抓取并保存。"""
