@@ -715,6 +715,152 @@ def build_trend_analysis_html(snapshot: Dict[str, Any]) -> str:
 
     return disclaimer + analysis
 
+
+def build_web3_events_section_html(today: datetime.date) -> str:
+    """
+    Web3 行业活动区块：
+    - 全年峰会概览（本项目以 2026 年为例，按已知官网信息硬编码）
+    - 最近一场活动的详细介绍
+    """
+
+    def d(s: str) -> datetime.date:
+        return datetime.datetime.strptime(s, "%Y-%m-%d").date()
+
+    events: List[Dict[str, Any]] = [
+        {
+            "name": "EthCC 2026（Ethereum Community Conference）",
+            "start": "2026-03-30",
+            "end": "2026-04-02",
+            "location": "Palais des Festivals, Cannes, France",
+            "url": "http://ethcc.io/",
+            "highlights": [
+                "EthCC 是欧洲规模最大、历史最长的年度以太坊社区活动，覆盖技术与社区主题。",
+                "活动为期 4 天（3/30-4/2），包含多场会议、网络交流与学习。",
+                "EthCC Week 亮点包含 Aperitivo（3/30）、Kaiko 联合论坛 The Agora（3/31）与官方 After Party（4/2）。",
+                "官方内置活动包括 Aave DeFi Day、EVA、Chain Patrol、Issuance Roundtable、Capture The Flag 等。",
+            ],
+        },
+        {
+            "name": "Paris Blockchain Week 2026",
+            "start": "2026-04-15",
+            "end": "2026-04-16",
+            "location": "Carrousel du Louvre, Paris, France",
+            "url": "https://parisblockchainweek.com/",
+            "highlights": [
+                "主题：The Bridge Between TradFi and Digital Assets。",
+                "面向机构落地与监管框架、托管、跨境结算与市场结构等议题。",
+                "定位为欧洲数字资产与机构级投资者的“决策者密度”论坛。",
+            ],
+        },
+        {
+            "name": "Hong Kong Web3 Festival 2026",
+            "start": "2026-04-20",
+            "end": "2026-04-23",
+            "location": "Hong Kong Convention and Exhibition Centre (HKCEC), Hong Kong",
+            "url": "https://group.hashkey.com/en/newsroom/hong-kong-web3-festival-2026",
+            "highlights": [
+                "时间：4/20-4/23，地点：HKCEC。",
+                "由 Wanxiang Blockchain Labs 与 HashKey Group 联合举办、W3ME 组织。",
+                "定位为亚洲顶级 Web3/加密产业聚会，聚合政策趋势与行业交流。",
+            ],
+        },
+        {
+            "name": "Consensus Miami 2026",
+            "start": "2026-05-05",
+            "end": "2026-05-07",
+            "location": "Miami Beach Convention Center and various locations in Miami Beach, Florida, USA",
+            "url": "https://consensus.coindesk.com/faq/",
+            "highlights": [
+                "时间：5/5-5/7，地点在 Miami Beach Convention Center 及周边场地。",
+                "官方 FAQ 描述：注册包含 tradeshow、sessions、events 与 receptions（随 pass 等级与容量限制）。",
+                "适合关注行业机构动态、产品与生态进展的参与者。",
+            ],
+        },
+        {
+            "name": "TOKEN2049（Singapore）2026",
+            "start": "2026-10-07",
+            "end": "2026-10-08",
+            "location": "Marina Bay Sands, Singapore",
+            "url": "https://sgt2049.com/",
+            "highlights": [
+                "官方页面公布：10/7-10/8，Marina Bay Sands（新加坡）。",
+                "强调 25,000+ attendees、7,000+ companies、300+ speakers、500+ exhibitors。",
+                "适合做产业对接与寻找合作机会。",
+            ],
+        },
+        {
+            "name": "WebX 2026（Tokyo）",
+            "start": "2026-07-13",
+            "end": "2026-07-14",
+            "location": "The Prince Park Tower Tokyo, Japan",
+            "url": "https://events.bizzabo.com/785866",
+            "highlights": [
+                "时间：7/13-7/14，地点：The Prince Park Tower Tokyo。",
+                "官方介绍：WebX 覆盖 cryptocurrencies、blockchain、Web3 infrastructure、NFTs、DeFi 与 AI 等主题。",
+                "定位为日本与国际行业的 Web3 交流平台。",
+            ],
+        },
+    ]
+
+    for e in events:
+        e["_sd"] = d(e["start"])
+        e["_ed"] = d(e["end"])
+
+    events_sorted = sorted(events, key=lambda x: x["_sd"])
+    latest = min(
+        (e for e in events_sorted if e["_sd"] >= today),
+        key=lambda x: x["_sd"],
+        default=events_sorted[0] if events_sorted else None,
+    )
+
+    if not latest:
+        return '<section class="events-section"><div class="no-news">暂无活动数据。</div></section>'
+
+    def fmt_range(start_d: datetime.date, end_d: datetime.date) -> str:
+        if start_d == end_d:
+            return start_d.isoformat()
+        return f"{start_d.isoformat()} ~ {end_d.isoformat()}"
+
+    overview_items = []
+    for e in events_sorted:
+        overview_items.append(
+            f"<li><strong>{html.escape(e['name'])}</strong>：{html.escape(fmt_range(e['_sd'], e['_ed']))} · {html.escape(e['location'])} · <a class='events-link' href='{html.escape(e['url'])}' target='_blank' rel='noopener'>官网 ↗</a></li>"
+        )
+
+    latest_highlights = "".join(
+        f"<li>{html.escape(x)}</li>" for x in latest.get("highlights") or []
+    )
+
+    overview_html = (
+        "<ul class='events-list'>"
+        + "".join(overview_items)
+        + "</ul>"
+    )
+
+    latest_html = f"""
+<h3>最新活动：{html.escape(latest['name'])}</h3>
+<div class="events-meta">{html.escape(fmt_range(latest['_sd'], latest['_ed']))} · {html.escape(latest['location'])}</div>
+<div class="events-kv">
+  <a class="events-link" href="{html.escape(latest['url'])}" target="_blank" rel="noopener">查看官网 ↗</a>
+</div>
+<ul class="events-list">{latest_highlights}</ul>
+"""
+
+    return f"""
+<section class="events-section">
+  <h2 class="section-title">新增活动 · Web3 峰会速览</h2>
+  <div class="events-grid">
+    <div class="events-card">
+      <h3>全年峰会活动概览（2026）</h3>
+      {overview_html}
+    </div>
+    <div class="events-card events-latest">
+      {latest_html}
+    </div>
+  </div>
+</section>
+""".strip()
+
 class CryptoNewsCrawler:
     def __init__(self, data_file: str = DATA_FILE, report_file: str = REPORT_FILE):
         self.data_file = data_file
@@ -876,6 +1022,7 @@ class CryptoNewsCrawler:
         )
         forecast_block = html_forecast_trend_chart(self.session, chart_by_coin)
         trend_block = build_trend_analysis_html(market_snapshot)
+        events_block = build_web3_events_section_html(today)
 
         html_template = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -948,6 +1095,19 @@ class CryptoNewsCrawler:
         .summary {{ font-size: 0.95rem; margin-top: 10px; opacity: 0.9; }}
         .footer {{ text-align: center; margin-top: 50px; color: var(--muted); font-size: 0.8rem; }}
         .no-news {{ text-align: center; padding: 50px; background: var(--card-bg); border-radius: 12px; color: var(--muted); }}
+        .events-section {{ margin-bottom: 2rem; }}
+        .events-grid {{ display: grid; grid-template-columns: 1fr; gap: 1.25rem; }}
+        @media (min-width: 920px) {{
+            .events-grid {{ grid-template-columns: 1.15fr 0.85fr; }}
+        }}
+        .events-card {{ background: var(--card-bg); border-radius: 12px; padding: 16px 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border: 1px solid rgba(128,128,128,0.12); }}
+        .events-card h3 {{ margin-top: 0; font-size: 1.05rem; }}
+        .events-meta {{ color: var(--muted); font-size: 0.9rem; margin-top: 6px; line-height: 1.35; }}
+        .events-kv {{ margin: 8px 0 0; }}
+        .events-link {{ color: var(--accent); text-decoration: none; }}
+        .events-link:hover {{ text-decoration: underline; }}
+        .events-list {{ margin: 10px 0 0; padding-left: 1.2rem; font-size: 0.95rem; }}
+        .events-list li {{ margin-bottom: 0.5rem; }}
     </style>
 </head>
 <body>
@@ -960,6 +1120,7 @@ class CryptoNewsCrawler:
         {charts_block}
         {forecast_block}
         {trend_block}
+        {events_block}
 
         <h2 class="section-title">今日资讯</h2>
         {"".join(self._format_article(item) for item in today_news) if today_news else '<div class="no-news">今日暂无新资讯。</div>'}
