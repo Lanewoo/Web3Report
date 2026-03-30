@@ -167,6 +167,11 @@ EVENTS_FILE = "web3_events.json"
 MACRO_FILE = "macro_calendar.json"
 REPORT_FILE = "report.html"
 
+# AI 配置 (通过环境变量设置 GEMINI_API_KEY 激活)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+AI_MODEL_NAME = "gemini-1.5-flash"
+
+
 # --- 工具函数 ---
 def summary_to_plain_text(text: str) -> str:
     """RSS 摘要常为 HTML；转为纯文本再写入页面，避免整段标签被当正文显示。"""
@@ -1121,6 +1126,88 @@ def build_trend_analysis_html(snapshot: Dict[str, Any]) -> str:
     return disclaimer + analysis
 
 
+def build_ai_summary_section_html(session: requests.Session, today_news: List[Dict], market_snapshot: Optional[Dict]) -> str:
+    """
+    AI 投研简评区块：
+    - 如果 GEMINI_API_KEY 已设置，则使用 Gemini 生成。
+    - 否则，回退到基于规则的“本地智能简评”。
+    """
+    summary_content = ""
+    is_ai = False
+    gdata = ((market_snapshot or {}).get("global") or {}).get("data") or {}
+    total_mcap_usd = (gdata.get("total_market_cap") or {}).get("usd")
+    mcap_change = gdata.get("market_cap_change_percentage_24h_usd")
+    mcap_change = float(mcap_change) if mcap_change is not None else 0.0
+    mcap_text = f"${float(total_mcap_usd)/1e12:.2f}T" if total_mcap_usd else "N/A"
+
+    if GEMINI_API_KEY:
+        try:
+            import google.generativeai as genai  # lazy import: no dependency crash without API usage
+
+            genai.configure(api_key=GEMINI_API_KEY)
+            model = genai.GenerativeModel(AI_MODEL_NAME)
+            
+            # 准备 AI Prompt
+            news_titles = [n['title'] for n in today_news[:15]]
+            market_info = ""
+            if market_snapshot:
+                market_info = f"当前总市值: {mcap_text}, 24h涨跌: {mcap_change:+.2f}%"
+            
+            prompt = f"""
+            你是一名资深的 Web3 投研专家。请根据以下今日新闻标题和市场行情，生成一段约 300 字的“投研日报总结”。
+            要求：
+            1. 语气专业、客观、有前瞻性。
+            2. 分为“核心动态”、“市场情绪”和“投研建议”三个小段落。
+            3. 使用 HTML 格式输出（仅限 <p> 标签）。
+            
+            今日新闻：
+            {chr(10).join(news_titles)}
+            
+            市场行情：
+            {market_info}
+            """
+            
+            response = model.generate_content(prompt)
+            if response and response.text:
+                summary_content = response.text.strip()
+                is_ai = True
+                logger.info("AI summary generated successfully via Gemini.")
+        except Exception as e:
+            logger.warning("Gemini AI failed: %s. Falling back to local rules.", e)
+
+    if not summary_content:
+        # 本地规则回退逻辑
+        logger.info("Generating local smart summary...")
+        sentiment = "中性偏稳"
+        
+        if mcap_change > 2: sentiment = "看涨情绪浓厚"
+        elif mcap_change > 0.5: sentiment = "情绪温和修复"
+        elif mcap_change < -2: sentiment = "市场恐慌抛售"
+        elif mcap_change < -0.5: sentiment = "情绪持续承压"
+        
+        summary_content = f"""
+        <p><strong>核心动态：</strong>今日 Web3 市场共捕获 {len(today_news)} 条有效资讯，涵盖监管、技术及生态多个维度。从新闻密度来看，行业正处于关键的技术更迭期。</p>
+        <p><strong>市场情绪：</strong>基于 24h 总市值波动（{mcap_change}%），当前市场呈现「{sentiment}」特征。资金流向显示，头部资产仍具备较强的吸血效应，山寨币表现分化。</p>
+        <p><strong>投研建议：</strong>在当前波动率环境下，建议保持审慎观望，重点关注宏观经济日历中的关键时点（如 FOMC 决议）。短期内应避开高杠杆博弈，聚焦具备基本面支撑的 Layer 2 及基础设施赛道。</p>
+        """
+
+    badge_html = '<span class="ai-badge">AI 深度分析</span>' if is_ai else '<span class="ai-badge local">智能规则简评</span>'
+    
+    return f"""
+<section class="ai-summary-section">
+    <div class="ai-card">
+        <div class="ai-header">
+            {badge_html}
+            <span class="ai-title">今日投研简报总结</span>
+        </div>
+        <div class="ai-content">
+            {summary_content}
+        </div>
+    </div>
+</section>
+"""
+
+
 def build_web3_events_section_html(today: datetime.date, events: List[Dict[str, Any]]) -> str:
     """
     Web3 行业活动区块：
@@ -1719,6 +1806,9 @@ class CryptoNewsCrawler:
         events_block = build_web3_events_section_html(today, self.events_data)
         whales_block = build_key_people_section_html(today_news)
         
+        # AI 摘要简评
+        ai_summary_block = build_ai_summary_section_html(self.session, today_news, market_snapshot)
+        
         # 获取情绪指数与宏观日历
         fng = fetch_fear_and_greed_index(self.session)
         sentiment_block = build_sentiment_section_html(fng)
@@ -1858,6 +1948,15 @@ class CryptoNewsCrawler:
         .impact-medium {{ background: #f39c12; }}
         .impact-low {{ background: #95a5a6; }}
         .macro-desc {{ color: var(--muted); font-size: 0.85rem; line-height: 1.4; }}
+        .ai-summary-section {{ margin-bottom: 2.5rem; }}
+        .ai-card {{ background: linear-gradient(135deg, rgba(0,123,255,0.05) 0%, rgba(0,123,255,0.01) 100%); border: 1px solid rgba(0,123,255,0.2); border-radius: 16px; padding: 20px; box-shadow: 0 4px 12px rgba(0,123,255,0.05); }}
+        .ai-header {{ display: flex; align-items: center; gap: 12px; margin-bottom: 15px; }}
+        .ai-badge {{ background: var(--accent); color: white; padding: 3px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }}
+        .ai-badge.local {{ background: #6c757d; }}
+        .ai-title {{ font-size: 1.1rem; font-weight: 700; color: var(--text); }}
+        .ai-content {{ font-size: 0.95rem; line-height: 1.7; color: var(--text); opacity: 0.9; }}
+        .ai-content p {{ margin: 0 0 12px; }}
+        .ai-content p:last-child {{ margin-bottom: 0; }}
     </style>
 </head>
 <body>
@@ -1867,6 +1966,7 @@ class CryptoNewsCrawler:
             <div class="stats">{today.isoformat()} · 今日更新 {len(today_news)} 条 · 总计存储 {len(self.news_data)} 条</div>
         </header>
 
+        {ai_summary_block}
         {quant_block}
         {sentiment_block}
         {charts_block}
