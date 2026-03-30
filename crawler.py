@@ -55,13 +55,37 @@ SOURCES = [
     {
         "name": "The Block",
         "url": "https://www.theblock.co/rss.xml",
-        # 备用：部分机房对主域名 403，旧域名有时仍可拉取（任一成功即停）
         "urls": [
             "https://www.theblock.co/rss.xml",
             "https://www.theblockcrypto.com/rss.xml",
         ],
         "type": "rss",
     },
+    {
+        "name": "Decrypt",
+        "url": "https://decrypt.co/feed",
+        "type": "rss",
+    },
+    {
+        "name": "Bitcoin.com",
+        "url": "https://news.bitcoin.com/feed/",
+        "type": "rss",
+    },
+    {
+        "name": "BeInCrypto",
+        "url": "https://beincrypto.com/feed/",
+        "type": "rss",
+    },
+    {
+        "name": "Crypto.news",
+        "url": "https://crypto.news/feed/",
+        "type": "rss",
+    },
+    {
+        "name": "Bitcoin Magazine",
+        "url": "https://bitcoinmagazine.com/feed/",
+        "type": "rss",
+    }
 ]
 
 USER_AGENT = (
