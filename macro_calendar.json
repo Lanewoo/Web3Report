@@ -1,0 +1,30 @@
+[
+    {
+        "name": "美联储议息会议 (FOMC Meeting)",
+        "date": "2026-03-17",
+        "type": "Interest Rate",
+        "impact": "High",
+        "description": "决定基准利率，直接影响美元流动性及加密市场风险偏好。"
+    },
+    {
+        "name": "美国 2 月 CPI 数据公布",
+        "date": "2026-03-12",
+        "type": "Inflation",
+        "impact": "Medium",
+        "description": "通胀数据是美联储调整货币政策的核心依据。"
+    },
+    {
+        "name": "美联储议息会议 (FOMC Meeting)",
+        "date": "2026-05-05",
+        "type": "Interest Rate",
+        "impact": "High",
+        "description": "5 月利率决议，市场预期可能维持或开始转向。"
+    },
+    {
+        "name": "美国一季度 GDP 修正值公布",
+        "date": "2026-05-28",
+        "type": "Economic Growth",
+        "impact": "Medium",
+        "description": "反映美国经济基本面，影响衰退预期。"
+    }
+]

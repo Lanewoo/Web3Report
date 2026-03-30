@@ -88,12 +88,83 @@ SOURCES = [
     }
 ]
 
+# Twitter 作为“大佬动态/今日资讯”的消息源：
+# 由于 Twitter/X 原生 RSS 经常需要登录/会被风控，这里依赖第三方“Twitter -> RSS”聚合服务。
+# 你可以在服务器环境变量中覆盖：
+#   - TWITTER_RSS_PROVIDER：auto | rsshub | nitter | twitrss（默认 auto）
+#   - TWITTER_RSS_BASE_URL：rsshub 的 base（默认 https://rsshub.app）
+#   - TWITTER_NITTER_BASE_URL：nitter 的 base（默认 https://nitter.net）
+#   - TWITTER_TWITTRSS_BASE_URL：twitrss.me 的 base（默认 https://twitrss.me）
+#   - TWITTER_RSS_LIMIT：每人拉取条数
+TWITTER_RSS_PROVIDER = os.environ.get("TWITTER_RSS_PROVIDER", "auto").strip().lower()
+TWITTER_RSS_BASE_URL = os.environ.get("TWITTER_RSS_BASE_URL", "https://rsshub.app")
+TWITTER_NITTER_BASE_URL = os.environ.get("TWITTER_NITTER_BASE_URL", "https://nitter.net")
+TWITTER_TWITTRSS_BASE_URL = os.environ.get("TWITTER_TWITTRSS_BASE_URL", "https://twitrss.me")
+TWITTER_RSS_LIMIT = int(os.environ.get("TWITTER_RSS_LIMIT", "10"))
+
+TWITTER_PEOPLE = [
+    {"name": "赵长鹏（CZ）", "handle": "cz_binance"},
+    {"name": "孙宇晨（Justin Sun）", "handle": "justinsuntron"},
+    {"name": "Vitalik Buterin", "handle": "vitalikbuterin"},
+    {"name": "Charles Hoskinson", "handle": "IOHK_Charles"},
+    {"name": "Do Kwon", "handle": "stablekwon"},
+    {"name": "Anatoly Yakovenko", "handle": "aeyakovenko"},
+    {"name": "Brian Armstrong", "handle": "brian_armstrong"},
+    {"name": "Sam Bankman-Fried（SBF）", "handle": "SBF_FTX"},
+    {"name": "Elizabeth Stark", "handle": "starkness"},
+    {"name": "Gavin Wood", "handle": "gavofyork"},
+    {"name": "Donald Trump（特朗普）", "handle": "realDonaldTrump"},
+    {"name": "Elon Musk（马斯克）", "handle": "elonmusk"},
+    {"name": "Michael Saylor（迈克尔·塞勒）", "handle": "saylor"},
+    {"name": "Cathie Wood（凯西·伍德）", "handle": "CathieDWood"},
+    {"name": "Jeremy Allaire（Circle）", "handle": "jerallaire"},
+]
+
+def _build_twitter_rss_url(handle: str, provider: str) -> str:
+    provider = provider.strip().lower()
+    if provider == "rsshub":
+        base = TWITTER_RSS_BASE_URL.rstrip("/")
+        q = urlencode({"limit": str(TWITTER_RSS_LIMIT)})
+        return f"{base}/twitter/user/{quote(handle, safe='')}?{q}"
+    if provider == "nitter":
+        base = TWITTER_NITTER_BASE_URL.rstrip("/")
+        return f"{base}/{quote(handle, safe='')}/rss"
+    if provider == "twitrss":
+        base = TWITTER_TWITTRSS_BASE_URL.rstrip("/")
+        return f"{base}/twitter_user_to_rss/?user={quote(handle, safe='')}"
+
+    # 未知 provider：退回 rsshub 格式（避免直接崩溃）
+    base = TWITTER_RSS_BASE_URL.rstrip("/")
+    q = urlencode({"limit": str(TWITTER_RSS_LIMIT)})
+    return f"{base}/twitter/user/{quote(handle, safe='')}?{q}"
+
+
+def _build_twitter_rss_urls(handle: str) -> List[str]:
+    if TWITTER_RSS_PROVIDER == "auto":
+        providers = ["rsshub", "nitter", "twitrss"]
+    else:
+        providers = [TWITTER_RSS_PROVIDER]
+    return [_build_twitter_rss_url(handle, p) for p in providers]
+
+
+for p in TWITTER_PEOPLE:
+    SOURCES.append(
+        {
+            "name": f"Twitter/{p['name']}",
+            # 自动回退：减少 403/404 导致的空数据
+            "urls": _build_twitter_rss_urls(p["handle"]),
+            "type": "rss",
+        }
+    )
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 MAX_STORED_NEWS = 1000
 DATA_FILE = "crypto_news.json"
+EVENTS_FILE = "web3_events.json"
+MACRO_FILE = "macro_calendar.json"
 REPORT_FILE = "report.html"
 
 # --- 工具函数 ---
@@ -119,10 +190,17 @@ def parse_published(pub: str) -> Optional[datetime.datetime]:
     """将 RSS pubDate (RFC 2822) 解析为本地时区的 datetime 对象。"""
     if not pub or not str(pub).strip():
         return None
+    s = str(pub).strip()
     try:
-        dt = parsedate_to_datetime(str(pub).strip())
+        dt = parsedate_to_datetime(s)
     except (TypeError, ValueError):
-        return None
+        # 一些 RSS 源（例如通过第三方代理/抓取后）可能没有 RFC2822，而是 ISO8601
+        try:
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            dt = datetime.datetime.fromisoformat(s)
+        except (TypeError, ValueError):
+            return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=datetime.timezone.utc)
     return dt.astimezone()
@@ -195,8 +273,9 @@ def _tradingview_advanced_chart_src(symbol: str) -> str:
         {
             "locale": "zh_CN",
             "symbol": symbol,
-            # 4 小时 K：价量兼顾；日 K 用 "D"
-            "interval": "240",
+            # 过去 12 个月：日K + 12M 区间
+            "interval": "D",
+            "range": "12M",
             "timezone": "Etc/UTC",
             "theme": "light",
             "style": "1",
@@ -272,7 +351,7 @@ def _numeric_series_by_day_utc(raw: List, last_n: Optional[int] = None) -> List[
 
 
 def fetch_market_chart_json(
-    session: requests.Session, coin_id: str, days: int = 30
+    session: requests.Session, coin_id: str, days: int = 365
 ) -> Optional[dict]:
     """拉取单币种 market_chart 原始 JSON（价+量一次返回，供多段逻辑复用）。"""
     try:
@@ -300,6 +379,33 @@ def daily_volumes_from_chart_json(
     return vals if len(vals) >= 2 else None
 
 
+def monthly_volumes_from_chart_json(
+    chart_json: Optional[dict], last_n: int = 12
+) -> Optional[tuple]:
+    """按月汇总成交额，返回 (volumes, month_labels)，默认最近12个月。"""
+    if not chart_json:
+        return None
+    vol_raw = chart_json.get("total_volumes") or []
+    if not vol_raw:
+        return None
+
+    by_month: Dict[datetime.date, float] = {}
+    for ts_ms, val in vol_raw:
+        d = datetime.datetime.fromtimestamp(
+            ts_ms / 1000.0, tz=datetime.timezone.utc
+        ).date()
+        key = d.replace(day=1)
+        by_month[key] = by_month.get(key, 0.0) + float(val)
+
+    keys = sorted(by_month.keys())
+    if len(keys) > last_n:
+        keys = keys[-last_n:]
+    vals = [by_month[k] for k in keys]
+    # 横坐标月份，跨年时保留年后两位避免混淆，如 25-11
+    labels = [f"{str(k.year)[-2:]}-{k.month:02d}" for k in keys]
+    return (vals, labels) if len(vals) >= 2 else None
+
+
 def daily_closes_from_chart_json(chart_json: Optional[dict]) -> Optional[List[float]]:
     if not chart_json:
         return None
@@ -310,13 +416,24 @@ def daily_closes_from_chart_json(chart_json: Optional[dict]) -> Optional[List[fl
     return daily if len(daily) >= 3 else None
 
 
-def svg_volume_bars(volumes: List[float], color: str, title: str = "") -> str:
+def all_daily_closes_from_chart_json(chart_json: Optional[dict]) -> Optional[List[float]]:
+    """CoinGecko market_chart prices -> 全量 UTC 日收盘序列（不截断）。"""
+    if not chart_json:
+        return None
+    raw = chart_json.get("prices") or []
+    daily = _closes_by_day_utc(raw)
+    return daily if len(daily) >= 3 else None
+
+
+def svg_volume_bars(
+    volumes: List[float], color: str, title: str = "", x_labels: Optional[List[str]] = None
+) -> str:
     """本地绘制成交量柱（不依赖 TradingView iframe）。"""
     if not volumes:
         return ""
     vmax = max(volumes) or 1.0
     W, Hbar = 300, 72
-    pad_l, pad_r, pad_b = 4.0, 4.0, 16.0
+    pad_l, pad_r, pad_b = 4.0, 4.0, 18.0
     plot_w = W - pad_l - pad_r
     n = len(volumes)
     bw = plot_w / max(n, 1)
@@ -329,9 +446,15 @@ def svg_volume_bars(volumes: List[float], color: str, title: str = "") -> str:
         rects.append(
             f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{max(bh, 1.0):.1f}" fill="{html.escape(color)}" opacity="0.78" rx="1"/>'
         )
+    x_texts = []
+    if x_labels and len(x_labels) == n:
+        for i, lb in enumerate(x_labels):
+            tx = pad_l + i * bw + bw * 0.5
+            x_texts.append(
+                f'<text x="{tx:.1f}" y="{Hbar-2:.0f}" text-anchor="middle" font-size="7" fill="currentColor" opacity="0.72">{html.escape(lb)}</text>'
+            )
     cap = f'<text x="{W/2:.0f}" y="11" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.85">{html.escape(title)}</text>'
-    foot = f'<text x="{W/2:.0f}" y="{Hbar-2:.0f}" text-anchor="middle" font-size="8" fill="currentColor" opacity="0.65">按日成交额（USD）</text>'
-    return f'<svg class="vol-bars-svg" viewBox="0 0 {W} {Hbar}" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">{cap}{"".join(rects)}{foot}</svg>'
+    return f'<svg class="vol-bars-svg" viewBox="0 0 {W} {Hbar}" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">{cap}{"".join(rects)}{"".join(x_texts)}</svg>'
 
 
 def holt_linear_forecast(
@@ -350,22 +473,114 @@ def holt_linear_forecast(
     return [L[-1] + k * T[-1] for k in range(1, horizon + 1)]
 
 
+def _sample_std(values: List[float]) -> float:
+    """样本标准差（n-1 作为分母），用于“残差驱动”的不确定性估计。"""
+    n = len(values)
+    if n <= 1:
+        return 0.0
+    mean = sum(values) / n
+    var = sum((v - mean) ** 2 for v in values) / (n - 1)
+    return var ** 0.5
+
+
+def _linear_residuals_std(y: List[float]) -> float:
+    """线性回归在样本内的残差标准差（用于近似置信区间宽度）。"""
+    n = len(y)
+    if n <= 2:
+        return 0.0
+    xs = [float(i) for i in range(n)]
+    slope, intercept = _linreg(xs, y)
+    residuals = []
+    for i, yi in enumerate(y):
+        x = float(i)
+        y_hat = slope * x + intercept
+        residuals.append(float(yi) - y_hat)
+    return _sample_std(residuals)
+
+
+def _holt_one_step_residuals_std(
+    y: List[float], alpha: float = 0.28, beta: float = 0.12
+) -> float:
+    """Holt 的“一步前瞻残差”标准差（t 时刻预测 t 的误差）。"""
+    if len(y) <= 2:
+        return 0.0
+    L = float(y[0])
+    T = float(y[1] - y[0])
+    residuals: List[float] = []
+    for t in range(1, len(y)):
+        # t 时刻的一步预测使用上一步的 level + trend
+        y_hat = L + T
+        residuals.append(float(y[t]) - y_hat)
+        lt = alpha * float(y[t]) + (1.0 - alpha) * (L + T)
+        tt = beta * (lt - L) + (1.0 - beta) * T
+        L, T = lt, tt
+    return _sample_std(residuals)
+
+
+def _backtest_mae_linear(y: List[float], horizon: int, min_train: int = 10) -> Optional[float]:
+    """Walk-forward 回测：用过去样本拟合线性回归，预测 horizon 后的 MAE。"""
+    n = len(y)
+    if n < (min_train + horizon):
+        return None
+    errs: List[float] = []
+    for t in range(min_train - 1, n - horizon):
+        train = y[: t + 1]
+        xs = [float(i) for i in range(len(train))]
+        slope, intercept = _linreg(xs, train)
+        x_fore = float(t + horizon)  # 预测落在原序列的索引
+        pred = slope * x_fore + intercept
+        true_v = float(y[t + horizon])
+        errs.append(abs(pred - true_v))
+    if not errs:
+        return None
+    return sum(errs) / len(errs)
+
+
+def _backtest_mae_holt(y: List[float], horizon: int, min_train: int = 10) -> Optional[float]:
+    """Walk-forward 回测：用 Holt 拟合训练集，预测 horizon 后的 MAE。"""
+    n = len(y)
+    if n < (min_train + horizon):
+        return None
+    errs: List[float] = []
+    for t in range(min_train - 1, n - horizon):
+        train = y[: t + 1]
+        fore = holt_linear_forecast(train, horizon=horizon)
+        pred = float(fore[-1])
+        true_v = float(y[t + horizon])
+        errs.append(abs(pred - true_v))
+    if not errs:
+        return None
+    return sum(errs) / len(errs)
+
+
+def _interval_heuristic(point: float, sigma: float, horizon: int, train_len: int, z: float) -> tuple:
+    """
+    残差驱动的启发式区间：
+    - sigma：来自样本内残差的标准差
+    - horizon：预测步数
+    - train_len：训练窗口长度
+    """
+    scale = (1.0 + float(horizon) / max(float(train_len), 1.0)) ** 0.5
+    w = z * sigma * scale
+    return (point - w, point + w)
+
+
 def html_tradingview_charts(
     session: requests.Session,
     markets: Optional[Dict[str, Any]] = None,
     chart_by_coin: Optional[Dict[str, Optional[dict]]] = None,
 ) -> str:
     """
-    TradingView 外链价图 + **本地 SVG 成交量**（CoinGecko total_volumes 按日），保证可见。
+    TradingView 外链价图 + 本地 SVG 成交量（CoinGecko，按月汇总最近12个月），保证可见。
     chart_by_coin：可选，已拉取的 market_chart JSON，避免重复请求。
     """
     if markets is None:
         markets = fetch_coins_markets_24h(session)
 
+    # 去掉 SOL 的图，仅保留 BTC/ETH
     pairs = [
         ("BINANCE:BTCUSDT", "Bitcoin (BTC)", "bitcoin"),
         ("BINANCE:ETHUSDT", "Ethereum (ETH)", "ethereum"),
-        ("BINANCE:SOLUSDT", "Solana (SOL)", "solana"),
     ]
     blocks = []
     for symbol, label, cg_id in pairs:
@@ -374,14 +589,15 @@ def html_tradingview_charts(
         row = markets.get(cg_id) or {}
         tvol = row.get("total_volume")
         vol_line = _fmt_volume_usd(tvol) if tvol is not None else "—"
-        vol_series = daily_volumes_from_chart_json(
-            (chart_by_coin or {}).get(cg_id), last_n=14
-        )
+        mv = monthly_volumes_from_chart_json((chart_by_coin or {}).get(cg_id), last_n=12)
+        vol_series = mv[0] if mv else None
+        month_labels = mv[1] if mv else None
         vol_svg = (
             svg_volume_bars(
                 vol_series,
                 "#2b8a3e" if "BTC" in label else ("#5c7cfa" if "ETH" in label else "#9c36b5"),
-                "近14日成交额（柱高∝量）",
+                "近12个月月度成交额（柱高∝量）",
+                month_labels,
             )
             if vol_series
             else '<p class="muted small">日度成交量序列暂不可用。</p>'
@@ -398,7 +614,7 @@ def html_tradingview_charts(
             </div>
             <div class="chart-vol-local">{vol_svg}</div>
             <div class="chart-vol-cg">24h 成交额（约）<span class="vol-num">{html.escape(vol_line)}</span></div>
-            <p class="chart-hint-mini">柱图为 CoinGecko 日度汇总，与交易所逐笔可能有差异。</p>
+            <p class="chart-hint-mini">柱图为 CoinGecko 月度汇总（过去12个月），与交易所逐笔可能有差异。</p>
         </div>"""
         )
     return f'<section class="charts-section"><h2 class="section-title">主要加密资产 · 价图 + 成交量</h2><div class="chart-row">{"".join(blocks)}</div></section>'
@@ -436,20 +652,25 @@ def _fetch_daily_closes(
     session: requests.Session,
     coin_id: str,
     chart_json: Optional[dict] = None,
+    window_days: Optional[int] = 30,
 ) -> Optional[List[float]]:
     if chart_json is None:
         chart_json = fetch_market_chart_json(session, coin_id)
-    return daily_closes_from_chart_json(chart_json)
+    daily = all_daily_closes_from_chart_json(chart_json)
+    if not daily:
+        return None
+    if window_days and len(daily) > window_days:
+        return daily[-window_days:]
+    return daily
 
 
 def _fmt_usd_price(p: float) -> str:
     """表格与坐标轴上的美元标价。"""
     ap = abs(p)
-    if ap >= 1000:
-        return f"${p:,.2f}"
+    # 需求：币价去掉小数点
     if ap >= 1:
-        return f"${p:,.2f}"
-    return f"${p:.4f}"
+        return f"${p:,.0f}"
+    return f"${p:.0f}"
 
 
 def _single_asset_forecast_svg(
@@ -529,6 +750,7 @@ def _single_asset_forecast_card(
     title: str,
     color: str,
     closes_usd: List[float],
+    closes_all: Optional[List[float]] = None,
 ) -> str:
     n = len(closes_usd)
     xs = [float(i) for i in range(n)]
@@ -542,8 +764,101 @@ def _single_asset_forecast_card(
     p_lin = (d_lin / last_hist * 100.0) if last_hist else 0.0
     d_holt = last_holt - last_hist
     p_holt = (d_holt / last_hist * 100.0) if last_hist else 0.0
-    cell_lin = f"${d_lin:+,.2f}（{p_lin:+.2f}%）"
-    cell_holt = f"${d_holt:+,.2f}（{p_holt:+.2f}%）"
+
+    # --- 投委会“定量”增强：置信区间 + 近段回测误差 ---
+    # 默认采用残差正态近似的启发式区间：point ± z * sigma * sqrt(1 + horizon/train_len)
+    z = 1.96  # 约 95% 两侧区间
+    sigma_lin = _linear_residuals_std(closes_usd)
+    sigma_holt = _holt_one_step_residuals_std(closes_usd)
+    ci_lin = _interval_heuristic(
+        point=last_lin, sigma=sigma_lin, horizon=30, train_len=n, z=z
+    )
+    ci_holt = _interval_heuristic(
+        point=last_holt, sigma=sigma_holt, horizon=30, train_len=n, z=z
+    )
+
+    mae_lin_7 = _backtest_mae_linear(closes_usd, horizon=7, min_train=10)
+    mae_lin_14 = _backtest_mae_linear(closes_usd, horizon=14, min_train=10)
+    mae_holt_7 = _backtest_mae_holt(closes_usd, horizon=7, min_train=10)
+    mae_holt_14 = _backtest_mae_holt(closes_usd, horizon=14, min_train=10)
+
+    ci_lin_str = f"{html.escape(_fmt_usd_price(ci_lin[0]))} ~ {html.escape(_fmt_usd_price(ci_lin[1]))}"
+    ci_holt_str = f"{html.escape(_fmt_usd_price(ci_holt[0]))} ~ {html.escape(_fmt_usd_price(ci_holt[1]))}"
+
+    def _fmt_mae(v: Optional[float]) -> str:
+        return html.escape(_fmt_usd_price(v)) if v is not None else "—"
+
+    bt_lin = f"{_fmt_mae(mae_lin_7)} / {_fmt_mae(mae_lin_14)}"
+    bt_holt = f"{_fmt_mae(mae_holt_7)} / {_fmt_mae(mae_holt_14)}"
+
+    # 多窗口投委会定量表：30/60/90（若样本不足则自动跳过）
+    win_rows: List[str] = []
+    signal_tags: List[str] = []
+    base_all = closes_all or closes_usd
+    for w in (30, 60, 90):
+        if len(base_all) < w:
+            continue
+        ww = base_all[-w:]
+        w_n = len(ww)
+        w_xs = [float(i) for i in range(w_n)]
+        w_slope, w_intercept = _linreg(w_xs, ww)
+        w_fore30 = w_slope * float(w_n + 29) + w_intercept
+        w_last = float(ww[-1])
+        w_delta_pct = (w_fore30 / w_last - 1.0) if w_last else 0.0
+        w_sigma = _linear_residuals_std(ww)
+        w_ci = _interval_heuristic(
+            point=w_fore30, sigma=w_sigma, horizon=30, train_len=w_n, z=1.96
+        )
+        w_mae7 = _backtest_mae_linear(ww, horizon=7, min_train=10)
+
+        if w_delta_pct > 0.01:
+            w_signal = "偏多"
+        elif w_delta_pct < -0.01:
+            w_signal = "偏空"
+        else:
+            w_signal = "中性"
+        signal_tags.append(w_signal)
+
+        win_rows.append(
+            f"<tr><td>{w}日</td>"
+            f"<td class='num'>{html.escape(_fmt_usd_price(w_fore30))}</td>"
+            f"<td class='num'>{html.escape(_fmt_usd_price(w_ci[0]))} ~ {html.escape(_fmt_usd_price(w_ci[1]))}</td>"
+            f"<td class='num'>{_fmt_mae(w_mae7)}</td>"
+            f"<td class='num'>{w_delta_pct*100:+.2f}%（{w_signal}）</td></tr>"
+        )
+
+    consensus = "—"
+    if signal_tags:
+        non_neutral = [s for s in signal_tags if s != "中性"]
+        if non_neutral and len(set(non_neutral)) == 1:
+            consensus = f"同向（{non_neutral[0]}）"
+        elif not non_neutral:
+            consensus = "同向（中性）"
+        else:
+            consensus = "信号分歧"
+
+    window_table_html = ""
+    if win_rows:
+        window_table_html = f"""
+  <table class="forecast-window-table">
+    <thead>
+      <tr>
+        <th>窗口</th>
+        <th class="num">线性 Day+30</th>
+        <th class="num">95%区间</th>
+        <th class="num">MAE(+7d)</th>
+        <th class="num">相对收盘</th>
+      </tr>
+    </thead>
+    <tbody>
+      {''.join(win_rows)}
+    </tbody>
+  </table>
+  <p class="forecast-window-note">多窗口一致性：{html.escape(consensus)}</p>"""
+
+    # 需求：币价去掉小数点（百分比仍保留两位小数更直观）
+    cell_lin = f"${d_lin:+,.0f}（{p_lin:+.2f}%）"
+    cell_holt = f"${d_holt:+,.0f}（{p_holt:+.2f}%）"
     svg = _single_asset_forecast_svg(title, color, closes_usd, fore_lin, fore_holt)
     return f"""
 <div class="forecast-card">
@@ -551,10 +866,15 @@ def _single_asset_forecast_card(
   <table class="forecast-price-table">
     <tr><td>最近一日收盘（USD）</td><td class="num">{html.escape(_fmt_usd_price(last_hist))}</td></tr>
     <tr><td>外推第30日 · 线性回归</td><td class="num">{html.escape(_fmt_usd_price(last_lin))}</td></tr>
+    <tr><td>外推第30日 · 线性回归（95%区间）</td><td class="num">{ci_lin_str}</td></tr>
     <tr><td>外推第30日 · Holt 双指数平滑</td><td class="num">{html.escape(_fmt_usd_price(last_holt))}</td></tr>
+    <tr><td>外推第30日 · Holt 双指数平滑（95%区间）</td><td class="num">{ci_holt_str}</td></tr>
     <tr><td>线性回归相对收盘</td><td class="num">{html.escape(cell_lin)}</td></tr>
     <tr><td>Holt 相对收盘</td><td class="num">{html.escape(cell_holt)}</td></tr>
+    <tr><td>回测误差（MAE +7d/+14d）· 线性回归</td><td class="num">{bt_lin}</td></tr>
+    <tr><td>回测误差（MAE +7d/+14d）· Holt</td><td class="num">{bt_holt}</td></tr>
   </table>
+  {window_table_html}
 </div>"""
 
 
@@ -563,35 +883,120 @@ def html_forecast_trend_chart(
     chart_by_coin: Optional[Dict[str, Optional[dict]]] = None,
 ) -> str:
     """
-    三币种各一张图：近若干日 USD 收盘 + 线性外推 30 日，纵轴与表格为具体美元价（示意）。
+    两币种各一张图：近若干日 USD 收盘 + 线性外推 30 日，纵轴与表格为具体美元价（示意）。
     """
     assets = [
         ("bitcoin", "BTC / Bitcoin", "#f7931a"),
         ("ethereum", "ETH / Ethereum", "#627eea"),
-        ("solana", "SOL / Solana", "#9945FF"),
     ]
     cards: List[str] = []
     for cid, title, color in assets:
         j = (chart_by_coin or {}).get(cid)
-        closes = _fetch_daily_closes(session, cid, j)
+        closes_all = _fetch_daily_closes(session, cid, j, window_days=None)
+        closes = _fetch_daily_closes(session, cid, j, window_days=30)
         if not closes:
             cards.append(
                 f'<div class="forecast-card forecast-card-miss"><p class="muted">无法获取 {html.escape(title)} 行情数据。</p></div>'
             )
             continue
-        cards.append(_single_asset_forecast_card(title, color, closes))
+        cards.append(_single_asset_forecast_card(title, color, closes, closes_all))
 
     inner = f'<div class="forecast-three">{"".join(cards)}</div>'
 
     return f"""<section class="forecast-section">
 <h2 class="section-title">未来约30日 · 分币种外推示意（美元标价，非投资建议）</h2>
 <div class="forecast-note-box">
-<p class="forecast-legal"><strong>方法：</strong>（1）<strong>一元线性回归</strong>：假设价格沿直线漂移，简单但易在拐点处失真。（2）<strong>Holt 双指数平滑</strong>：同时估计「水平」与「趋势」，对近期变化更敏感，通常比纯直线更贴近短序列，但仍<strong>无法</strong>刻画暴涨暴跌与黑天鹅。
-纵轴与表格为模型输出，非实时盘口。**更优方法**（需更多数据与算力）包括：ARIMA/Prophet、状态空间模型、GARCH 类波动率模型、变点检测与机器学习；加密市场非平稳，任何外推均可能失败。</p>
+<p class="forecast-legal"><strong>预测样本窗口：</strong>当前预测使用各币<strong>过去30日（约1个月）日收盘价</strong>作为输入数据，再向后外推30日。<br><strong>方法：</strong>（1）<strong>一元线性回归</strong>：假设价格沿直线漂移，简单但易在拐点处失真。（2）<strong>Holt 双指数平滑</strong>：同时估计「水平」与「趋势」，对近期变化更敏感，通常比纯直线更贴近短序列，但仍<strong>无法</strong>刻画暴涨暴跌与黑天鹅。
+说明：本区间（95%）为残差标准差驱动的正态近似启发式区间，未保证真实覆盖率；回测误差为近段 walk-forward MAE（+7d/+14d），用来衡量短期拟合稳定性，但仍无法覆盖结构性变化。纵轴与表格为模型输出，非实时盘口。**更优方法**（需更多数据与算力）包括：ARIMA/Prophet、状态空间模型、GARCH 类波动率模型、变点检测与机器学习；加密市场非平稳，任何外推均可能失败。</p>
 </div>
 {inner}
 <p class="muted small">数据来源：CoinGecko <code>market_chart</code> · 与本项目作者/模型无法律上的保证关系</p>
 </section>"""
+
+
+def build_quant_summary_html(chart_by_coin: Dict[str, Optional[dict]]) -> str:
+    """投委会风格定量摘要：近1d/7d/30d收益、30d波动、30d最大回撤。"""
+    coin_defs = [
+        ("bitcoin", "BTC"),
+        ("ethereum", "ETH"),
+    ]
+
+    def _fmt_pct(p: Optional[float]) -> str:
+        if p is None:
+            return "—"
+        return f"{p*100:+.2f}%"
+
+    def _max_drawdown_pct(closes: List[float]) -> Optional[float]:
+        if not closes:
+            return None
+        peak = closes[0]
+        max_dd = 0.0
+        for v in closes:
+            if v > peak:
+                peak = v
+            if peak > 0:
+                dd = v / peak - 1.0
+                max_dd = min(max_dd, dd)
+        return max_dd  # 为负数
+
+    rows: List[str] = []
+    for cid, short in coin_defs:
+        closes = daily_closes_from_chart_json(chart_by_coin.get(cid))
+        if not closes or len(closes) < 3:
+            continue
+
+        last = float(closes[-1])
+        ret_1d = (closes[-1] / closes[-2] - 1.0) if len(closes) >= 2 else None
+        ret_7d = (closes[-1] / closes[-8] - 1.0) if len(closes) >= 8 else None
+        ret_30d = (closes[-1] / closes[0] - 1.0) if len(closes) >= 1 else None
+
+        daily_returns = [
+            (closes[i] / closes[i - 1] - 1.0) for i in range(1, len(closes))
+        ]
+        recent = daily_returns[-30:]
+        vol_ann = _sample_std(recent) * (365.0**0.5) if len(recent) >= 2 else None
+        max_dd = _max_drawdown_pct(closes)
+
+        rows.append(
+            f"""
+<tr>
+  <td>{html.escape(short)}</td>
+  <td class="num">{html.escape(_fmt_usd_price(last))}</td>
+  <td class="num">{_fmt_pct(ret_1d)}</td>
+  <td class="num">{_fmt_pct(ret_7d)}</td>
+  <td class="num">{_fmt_pct(ret_30d)}</td>
+  <td class="num">{_fmt_pct(vol_ann)}</td>
+  <td class="num">{_fmt_pct(max_dd)}</td>
+</tr>"""
+        )
+
+    if not rows:
+        return ""
+
+    return f"""
+<section class="quant-section">
+  <h2 class="section-title">Quant Summary（定量）</h2>
+  <div class="quant-box">
+    <table class="quant-table">
+      <thead>
+        <tr>
+          <th>资产</th>
+          <th class="num">最新</th>
+          <th class="num">1D</th>
+          <th class="num">7D</th>
+          <th class="num">30D</th>
+          <th class="num">Vol(年化)</th>
+          <th class="num">MaxDD(30D)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {"".join(rows)}
+      </tbody>
+    </table>
+    <p class="quant-note">说明：口径为 CoinGecko UTC 日度收盘价；Vol 为 30d realized vol 年化，MaxDD 为样本内峰值回撤。</p>
+  </div>
+</section>
+""".strip()
 
 
 def build_trend_analysis_html(snapshot: Dict[str, Any]) -> str:
@@ -619,7 +1024,7 @@ def build_trend_analysis_html(snapshot: Dict[str, Any]) -> str:
         if usd is not None:
             chs = f"{ch24:+.2f}%" if ch24 is not None else "—"
             metric_items.append(
-                f"<li><strong>{name}</strong>：${usd:,.2f}（24h {chs}）</li>"
+                f"<li><strong>{name}</strong>：${usd:,.0f}（24h {chs}）</li>"
             )
 
     mcap_ch = None
@@ -716,97 +1121,34 @@ def build_trend_analysis_html(snapshot: Dict[str, Any]) -> str:
     return disclaimer + analysis
 
 
-def build_web3_events_section_html(today: datetime.date) -> str:
+def build_web3_events_section_html(today: datetime.date, events: List[Dict[str, Any]]) -> str:
     """
     Web3 行业活动区块：
-    - 全年峰会概览（本项目以 2026 年为例，按已知官网信息硬编码）
+    - 全年峰会概览
     - 最近一场活动的详细介绍
     """
+    if not events:
+        return '<section class="events-section"><div class="no-news">暂无活动数据。</div></section>'
 
     def d(s: str) -> datetime.date:
         return datetime.datetime.strptime(s, "%Y-%m-%d").date()
 
-    events: List[Dict[str, Any]] = [
-        {
-            "name": "EthCC 2026（Ethereum Community Conference）",
-            "start": "2026-03-30",
-            "end": "2026-04-02",
-            "location": "Palais des Festivals, Cannes, France",
-            "url": "http://ethcc.io/",
-            "highlights": [
-                "EthCC 是欧洲规模最大、历史最长的年度以太坊社区活动，覆盖技术与社区主题。",
-                "活动为期 4 天（3/30-4/2），包含多场会议、网络交流与学习。",
-                "EthCC Week 亮点包含 Aperitivo（3/30）、Kaiko 联合论坛 The Agora（3/31）与官方 After Party（4/2）。",
-                "官方内置活动包括 Aave DeFi Day、EVA、Chain Patrol、Issuance Roundtable、Capture The Flag 等。",
-            ],
-        },
-        {
-            "name": "Paris Blockchain Week 2026",
-            "start": "2026-04-15",
-            "end": "2026-04-16",
-            "location": "Carrousel du Louvre, Paris, France",
-            "url": "https://parisblockchainweek.com/",
-            "highlights": [
-                "主题：The Bridge Between TradFi and Digital Assets。",
-                "面向机构落地与监管框架、托管、跨境结算与市场结构等议题。",
-                "定位为欧洲数字资产与机构级投资者的“决策者密度”论坛。",
-            ],
-        },
-        {
-            "name": "Hong Kong Web3 Festival 2026",
-            "start": "2026-04-20",
-            "end": "2026-04-23",
-            "location": "Hong Kong Convention and Exhibition Centre (HKCEC), Hong Kong",
-            "url": "https://group.hashkey.com/en/newsroom/hong-kong-web3-festival-2026",
-            "highlights": [
-                "时间：4/20-4/23，地点：HKCEC。",
-                "由 Wanxiang Blockchain Labs 与 HashKey Group 联合举办、W3ME 组织。",
-                "定位为亚洲顶级 Web3/加密产业聚会，聚合政策趋势与行业交流。",
-            ],
-        },
-        {
-            "name": "Consensus Miami 2026",
-            "start": "2026-05-05",
-            "end": "2026-05-07",
-            "location": "Miami Beach Convention Center and various locations in Miami Beach, Florida, USA",
-            "url": "https://consensus.coindesk.com/faq/",
-            "highlights": [
-                "时间：5/5-5/7，地点在 Miami Beach Convention Center 及周边场地。",
-                "官方 FAQ 描述：注册包含 tradeshow、sessions、events 与 receptions（随 pass 等级与容量限制）。",
-                "适合关注行业机构动态、产品与生态进展的参与者。",
-            ],
-        },
-        {
-            "name": "TOKEN2049（Singapore）2026",
-            "start": "2026-10-07",
-            "end": "2026-10-08",
-            "location": "Marina Bay Sands, Singapore",
-            "url": "https://sgt2049.com/",
-            "highlights": [
-                "官方页面公布：10/7-10/8，Marina Bay Sands（新加坡）。",
-                "强调 25,000+ attendees、7,000+ companies、300+ speakers、500+ exhibitors。",
-                "适合做产业对接与寻找合作机会。",
-            ],
-        },
-        {
-            "name": "WebX 2026（Tokyo）",
-            "start": "2026-07-13",
-            "end": "2026-07-14",
-            "location": "The Prince Park Tower Tokyo, Japan",
-            "url": "https://events.bizzabo.com/785866",
-            "highlights": [
-                "时间：7/13-7/14，地点：The Prince Park Tower Tokyo。",
-                "官方介绍：WebX 覆盖 cryptocurrencies、blockchain、Web3 infrastructure、NFTs、DeFi 与 AI 等主题。",
-                "定位为日本与国际行业的 Web3 交流平台。",
-            ],
-        },
-    ]
-
+    # 预处理日期并排序
+    processed_events = []
     for e in events:
-        e["_sd"] = d(e["start"])
-        e["_ed"] = d(e["end"])
+        try:
+            item = e.copy()
+            item["_sd"] = d(e["start"])
+            item["_ed"] = d(e["end"])
+            processed_events.append(item)
+        except Exception as err:
+            logger.warning("Invalid event date format: %s", err)
+            continue
 
-    events_sorted = sorted(events, key=lambda x: x["_sd"])
+    if not processed_events:
+        return '<section class="events-section"><div class="no-news">暂无有效活动数据。</div></section>'
+
+    events_sorted = sorted(processed_events, key=lambda x: x["_sd"])
     latest = min(
         (e for e in events_sorted if e["_sd"] >= today),
         key=lambda x: x["_sd"],
@@ -861,12 +1203,336 @@ def build_web3_events_section_html(today: datetime.date) -> str:
 </section>
 """.strip()
 
+
+def build_key_people_section_html(today_news: List[Dict]) -> str:
+    """
+    大佬动态：
+    - 以“今日抓取到的新闻摘要”为数据源
+    - 按大佬名字/别名/关键词做匹配，展示每位大佬今日最相关的一条
+    """
+
+    people = [
+        {
+            "name": "赵长鹏（CZ）",
+            "role": "Binance 联合创始人（曾任 CEO）",
+            "keywords": [
+                "cz",
+                "changpeng",
+                "changpeng zhao",
+                "zhao changpeng",
+                "赵长鹏",
+                "binance",
+            ],
+        },
+        {
+            "name": "孙宇晨（Justin Sun）",
+            "role": "TRON（波场）创始人",
+            "keywords": [
+                "justin sun",
+                "sun yuchen",
+                "孙宇晨",
+                "tron",
+                "波场",
+            ],
+        },
+        {
+            "name": "Vitalik Buterin",
+            "role": "以太坊联合创始人",
+            "keywords": ["vitalik", "buterin", "ethere"],
+        },
+        {
+            "name": "Charles Hoskinson",
+            "role": "Cardano / IOHK 创始人",
+            "keywords": ["charles hoskinson", "hoskinson", "cardano"],
+        },
+        {
+            "name": "Do Kwon",
+            "role": "Terraform Labs（Terra/LUNA）联合创始人",
+            "keywords": ["do kwon", "kwon", "terra", "luna"],
+        },
+        {
+            "name": "Anatoly Yakovenko",
+            "role": "Solana 联合创始人",
+            "keywords": ["anatoly", "yakovenko", "solana"],
+        },
+        {
+            "name": "Brian Armstrong",
+            "role": "Coinbase 联合创始人兼 CEO",
+            "keywords": ["brian armstrong", "armstrong", "coinbase"],
+        },
+        {
+            "name": "Sam Bankman-Fried（SBF）",
+            "role": "FTX / Alameda Research 创始人",
+            "keywords": ["sam bankman-fried", "sbf", "bankman-fried", "ftx"],
+        },
+        {
+            "name": "Elizabeth Stark",
+            "role": "Lightning Labs 联合创始人兼 CEO",
+            "keywords": ["elizabeth stark", "stark", "lightning labs", "lightning"],
+        },
+        {
+            "name": "Gavin Wood",
+            "role": "Polkadot / Parity / Web3 基金会联合创始人之一",
+            "keywords": ["gavin wood", "wood", "polkadot", "parity"],
+        },
+        {
+            "name": "Donald Trump（特朗普）",
+            "role": "美国前总统（加密与监管议题常涉公开表态）",
+            "keywords": [
+                "trump",
+                "donald",
+                "realdonaldtrump",
+                "bitcoin",
+                "crypto",
+                "cryptocurrency",
+                "ethereum",
+                "web3",
+            ],
+        },
+        {
+            "name": "Elon Musk（马斯克）",
+            "role": "Tesla / SpaceX / X（原推特）等 CEO",
+            "keywords": [
+                "elon",
+                "musk",
+                "elonmusk",
+                "tesla",
+                "spacex",
+                "xai",
+                "bitcoin",
+                "crypto",
+                "dogecoin",
+                "web3",
+            ],
+        },
+        {
+            "name": "Michael Saylor（迈克尔·塞勒）",
+            "role": "Strategy（原 MicroStrategy）执行董事长",
+            "keywords": [
+                "michael saylor",
+                "saylor",
+                "microstrategy",
+                "bitcoin",
+                "btc",
+                "crypto",
+            ],
+        },
+        {
+            "name": "Cathie Wood（凯西·伍德）",
+            "role": "ARK Invest 创始人兼 CIO",
+            "keywords": [
+                "cathie wood",
+                "cathiedwood",
+                "ark invest",
+                "ark",
+                "bitcoin",
+                "crypto",
+            ],
+        },
+        {
+            "name": "Jeremy Allaire（Circle）",
+            "role": "Circle 联合创始人兼 CEO",
+            "keywords": [
+                "jeremy allaire",
+                "jerallaire",
+                "circle",
+                "usdc",
+                "stablecoin",
+                "crypto",
+                "web3",
+            ],
+        },
+    ]
+
+    def match_item(item: Dict, person: Dict[str, Any]) -> bool:
+        hay = (item.get("title") or "") + " " + (item.get("summary") or "")
+        hay = str(hay).lower()
+        for k in person["keywords"]:
+            if str(k).lower() in hay:
+                return True
+        return False
+
+    def to_time_str(published: str) -> str:
+        dt = parse_published(published)
+        return dt.strftime("%Y-%m-%d %H:%M") if dt else published
+
+    def llm_style_summary_100(item: Dict) -> str:
+        """
+        轻量“模型整理感”摘要：优先用标题+摘要拼接，去噪后压缩到 100 字以内。
+        （本地规则生成，不依赖外部模型服务）
+        """
+        title = str(item.get("title") or "").strip()
+        body = summary_to_plain_text(item.get("summary") or "")
+        raw = f"{title}。{body}" if body else title
+        raw = " ".join(raw.split())
+        raw = raw.replace("\n", " ").replace("\r", " ").strip(" .;；，,")
+        if len(raw) <= 100:
+            return raw
+        # 优先在常见停顿符号处截断，避免生硬截字
+        for sep in ("。", "；", ";", "，", ",", " "):
+            idx = raw.find(sep, 40, 100)
+            if idx != -1:
+                cut = raw[:idx].strip()
+                if len(cut) >= 28:
+                    return cut + "…"
+        return raw[:99].rstrip() + "…"
+
+    def person_header_html(p: Dict[str, Any]) -> str:
+        role = html.escape(str(p.get("role") or "").strip())
+        role_line = (
+            f'<div class="whales-role">{role}</div>' if role else ""
+        )
+        return (
+            f'<div class="whales-person">{html.escape(p["name"])}</div>\n  {role_line}'
+        )
+
+    cards: List[str] = []
+    for person in people:
+        latest = next((it for it in today_news if match_item(it, person)), None)
+        if not latest:
+            cards.append(
+                f"""
+<div class="whales-card">
+  {person_header_html(person)}
+  <div class="whales-empty">今日暂无匹配动态。</div>
+</div>"""
+            )
+            continue
+
+        summary_plain = llm_style_summary_100(latest)
+
+        time_str = to_time_str(latest.get("published", ""))
+        cards.append(
+            f"""
+<div class="whales-card">
+  {person_header_html(person)}
+  <div class="whales-latest">
+    <strong>最新：</strong>{html.escape(latest.get('title',''))}
+  </div>
+  <div class="whales-meta">📅 {html.escape(time_str)} · 来源：{html.escape(latest.get('source',''))} · <a class="whales-link" href="{html.escape(latest.get('link',''))}" target="_blank" rel="noopener">链接</a></div>
+  <div class="whales-snippet">{html.escape(summary_plain)}</div>
+</div>"""
+        )
+
+    return """
+<section class="whales-section">
+  <h2 class="section-title">大佬动态（今日相关）</h2>
+  <div class="whales-grid">
+    {cards}
+  </div>
+  <p class="whales-note muted small">说明：本区块基于今日 RSS 新闻标题/摘要关键词匹配，展示“相关新闻中的大佬相关动态”，非官方社媒抓取。</p>
+</section>
+""".format(cards="".join(cards)).strip()
+
+def fetch_fear_and_greed_index(session: requests.Session) -> Optional[Dict[str, Any]]:
+    """获取恐惧与贪婪指数。"""
+    try:
+        r = session.get("https://api.alternative.me/fng/", timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        if data and "data" in data and len(data["data"]) > 0:
+            return data["data"][0]
+    except Exception as e:
+        logger.warning("Fear & Greed Index failed: %s", e)
+    return None
+
+
+def build_macro_section_html(today: datetime.date, macro_events: List[Dict[str, Any]]) -> str:
+    """构建宏观经济日历区块。"""
+    if not macro_events:
+        return '<section class="macro-section"><div class="no-news">暂无宏观数据。</div></section>'
+
+    def d(s: str) -> datetime.date:
+        return datetime.datetime.strptime(s, "%Y-%m-%d").date()
+
+    processed = []
+    for e in macro_events:
+        try:
+            item = e.copy()
+            item["_date"] = d(e["date"])
+            processed.append(item)
+        except Exception as err:
+            logger.warning("Invalid macro date format: %s", err)
+            continue
+
+    if not processed:
+        return '<section class="macro-section"><div class="no-news">暂无有效宏观数据。</div></section>'
+
+    # 按日期排序
+    sorted_macro = sorted(processed, key=lambda x: x["_date"])
+    # 筛选即将到来的或最近的 5 条
+    upcoming = [e for e in sorted_macro if e["_date"] >= today][:5]
+    
+    rows = []
+    for e in upcoming:
+        impact_class = f"impact-{e.get('impact', 'Medium').lower()}"
+        rows.append(f"""
+        <tr>
+            <td>{html.escape(e['date'])}</td>
+            <td><span class="macro-type">{html.escape(e.get('type', 'Other'))}</span></td>
+            <td><strong>{html.escape(e['name'])}</strong></td>
+            <td><span class="impact-tag {impact_class}">{html.escape(e.get('impact', 'Medium'))}</span></td>
+            <td class="macro-desc">{html.escape(e.get('description', ''))}</td>
+        </tr>""")
+
+    return f"""
+<section class="macro-section">
+  <h2 class="section-title">宏观预警 · 关键经济日历</h2>
+  <div class="macro-card">
+    <table class="macro-table">
+      <thead>
+        <tr>
+          <th>日期</th>
+          <th>类型</th>
+          <th>事件</th>
+          <th>重要性</th>
+          <th>影响说明</th>
+        </tr>
+      </thead>
+      <tbody>
+        {"".join(rows) if rows else '<tr><td colspan="5" class="muted">近期无重大宏观事件。</td></tr>'}
+      </tbody>
+    </table>
+  </div>
+</section>"""
+
+
+def build_sentiment_section_html(fng: Optional[Dict[str, Any]]) -> str:
+    """构建市场情绪（恐惧与贪婪）区块。"""
+    if not fng:
+        return ""
+    
+    val = int(fng.get("value", 50))
+    label = fng.get("value_classification", "Neutral")
+    
+    # 根据数值决定颜色
+    color = "#e74c3c" # 红色 (Fear)
+    if val >= 75: color = "#27ae60" # 深绿 (Extreme Greed)
+    elif val >= 55: color = "#2ecc71" # 浅绿 (Greed)
+    elif val >= 45: color = "#f1c40f" # 黄色 (Neutral)
+    elif val >= 25: color = "#e67e22" # 橙色 (Fear)
+
+    return f"""
+<div class="sentiment-box">
+  <div class="sentiment-title">市场情绪指数 (Fear & Greed)</div>
+  <div class="sentiment-value" style="color: {color};">{val}</div>
+  <div class="sentiment-label" style="background: {color};">{html.escape(label)}</div>
+  <div class="sentiment-meter">
+    <div class="sentiment-bar" style="width: {val}%; background: {color};"></div>
+  </div>
+</div>"""
+
+
 class CryptoNewsCrawler:
-    def __init__(self, data_file: str = DATA_FILE, report_file: str = REPORT_FILE):
+    def __init__(self, data_file: str = DATA_FILE, events_file: str = EVENTS_FILE, macro_file: str = MACRO_FILE, report_file: str = REPORT_FILE):
         self.data_file = data_file
+        self.events_file = events_file
+        self.macro_file = macro_file
         self.report_file = report_file
         self.session = get_session()
         self.news_data = self._load_from_disk()
+        self.events_data = self._load_events()
+        self.macro_data = self._load_macro()
 
     def _load_from_disk(self) -> List[Dict]:
         """从磁盘加载现有新闻数据。"""
@@ -876,6 +1542,30 @@ class CryptoNewsCrawler:
                     return json.load(f)
             except (json.JSONDecodeError, IOError) as e:
                 logger.error("Failed to load data file: %s", e)
+        return []
+
+    def _load_events(self) -> List[Dict]:
+        """从磁盘加载 Web3 活动数据。"""
+        if os.path.exists(self.events_file):
+            try:
+                with open(self.events_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    logger.info("Loaded %d events from %s", len(data), self.events_file)
+                    return data
+            except (json.JSONDecodeError, IOError) as e:
+                logger.error("Failed to load events file: %s", e)
+        return []
+
+    def _load_macro(self) -> List[Dict]:
+        """从磁盘加载宏观经济日历。"""
+        if os.path.exists(self.macro_file):
+            try:
+                with open(self.macro_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    logger.info("Loaded %d macro events from %s", len(data), self.macro_file)
+                    return data
+            except (json.JSONDecodeError, IOError) as e:
+                logger.error("Failed to load macro file: %s", e)
         return []
 
     def fetch_rss_source(self, source: Dict) -> List[Dict]:
@@ -900,6 +1590,9 @@ class CryptoNewsCrawler:
 
                     title = item.title.text.strip() if item.title else "无标题"
                     pub_date = item.pubDate.text.strip() if item.pubDate else ""
+                    # 部分 RSS（如 Twitter 经第三方聚合）不一定携带 pubDate；回填抓取时间保证能进入“今日”分组
+                    if not pub_date:
+                        pub_date = datetime.datetime.now().isoformat()
 
                     raw_desc = item.description.text if item.description else ""
                     desc_soup = BeautifulSoup(raw_desc, "html.parser")
@@ -1015,14 +1708,21 @@ class CryptoNewsCrawler:
         market_snapshot = fetch_market_snapshot(self.session)
         markets_24h = fetch_coins_markets_24h(self.session)
         chart_by_coin: Dict[str, Optional[dict]] = {}
-        for _cid in ("bitcoin", "ethereum", "solana"):
+        for _cid in ("bitcoin", "ethereum"):
             chart_by_coin[_cid] = fetch_market_chart_json(self.session, _cid)
+        quant_block = build_quant_summary_html(chart_by_coin)
         charts_block = html_tradingview_charts(
             self.session, markets_24h, chart_by_coin
         )
         forecast_block = html_forecast_trend_chart(self.session, chart_by_coin)
         trend_block = build_trend_analysis_html(market_snapshot)
-        events_block = build_web3_events_section_html(today)
+        events_block = build_web3_events_section_html(today, self.events_data)
+        whales_block = build_key_people_section_html(today_news)
+        
+        # 获取情绪指数与宏观日历
+        fng = fetch_fear_and_greed_index(self.session)
+        sentiment_block = build_sentiment_section_html(fng)
+        macro_block = build_macro_section_html(today, self.macro_data)
 
         html_template = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1047,7 +1747,8 @@ class CryptoNewsCrawler:
             .chart-row {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
         }}
         @media (min-width: 1100px) {{
-            .chart-row {{ grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.35rem; }}
+            /* 现在只保留 BTC/ETH 两张图，保持两列更紧凑 */
+            .chart-row {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.35rem; }}
         }}
         .chart-wrap {{ background: var(--card-bg); border-radius: 14px; padding: 14px 16px 16px; box-shadow: 0 2px 10px rgba(0,0,0,0.06); border: 1px solid rgba(128,128,128,0.12); display: flex; flex-direction: column; gap: 0; min-width: 0; }}
         .chart-card-head {{ display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }}
@@ -1065,7 +1766,7 @@ class CryptoNewsCrawler:
         .forecast-legal {{ margin: 0; font-size: 0.88rem; }}
         .forecast-three {{ display: grid; grid-template-columns: 1fr; gap: 1.25rem; margin-top: 0.5rem; }}
         @media (min-width: 920px) {{
-            .forecast-three {{ grid-template-columns: 1fr 1fr 1fr; }}
+            .forecast-three {{ grid-template-columns: 1fr 1fr; }}
         }}
         .forecast-card {{ background: var(--card-bg); border-radius: 12px; padding: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }}
         .forecast-card-miss {{ padding: 1rem; }}
@@ -1075,6 +1776,12 @@ class CryptoNewsCrawler:
         .forecast-price-table tr:first-child td {{ border-top: none; }}
         .forecast-price-table td:first-child {{ color: var(--muted); padding-right: 8px; }}
         .forecast-price-table .num {{ text-align: right; font-weight: 600; white-space: nowrap; }}
+        .forecast-window-table {{ width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 10px; }}
+        .forecast-window-table th {{ text-align: left; color: var(--muted); font-weight: 600; padding: 6px 4px; border-bottom: 1px solid rgba(128,128,128,0.18); }}
+        .forecast-window-table th.num {{ text-align: right; white-space: nowrap; }}
+        .forecast-window-table td {{ padding: 6px 4px; border-bottom: 1px solid rgba(128,128,128,0.12); }}
+        .forecast-window-table td.num {{ text-align: right; white-space: nowrap; font-weight: 600; }}
+        .forecast-window-note {{ margin: 6px 0 0; font-size: 0.78rem; color: var(--muted); }}
         .disclaimer-box {{ background: rgba(255,193,7,0.12); border: 1px solid rgba(255,193,7,0.35); border-radius: 8px; padding: 12px 14px; margin-bottom: 1.25rem; }}
         .disclaimer {{ margin: 0; font-size: 0.9rem; }}
         .trend-section {{ margin-bottom: 2rem; }}
@@ -1108,6 +1815,49 @@ class CryptoNewsCrawler:
         .events-link:hover {{ text-decoration: underline; }}
         .events-list {{ margin: 10px 0 0; padding-left: 1.2rem; font-size: 0.95rem; }}
         .events-list li {{ margin-bottom: 0.5rem; }}
+        .quant-section {{ margin-bottom: 2rem; }}
+        .quant-box {{ background: var(--card-bg); border-radius: 14px; padding: 14px 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); border: 1px solid rgba(128,128,128,0.12); }}
+        .quant-table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; }}
+        .quant-table th {{ text-align: left; color: var(--muted); font-weight: 600; padding: 8px 8px; border-bottom: 1px solid rgba(128,128,128,0.15); }}
+        .quant-table th.num {{ text-align: right; white-space: nowrap; }}
+        .quant-table td {{ padding: 8px 8px; border-bottom: 1px solid rgba(128,128,128,0.12); vertical-align: top; }}
+        .quant-table td.num {{ text-align: right; font-weight: 600; white-space: nowrap; }}
+        .quant-note {{ margin: 8px 0 0; font-size: 0.78rem; color: var(--muted); }}
+        .whales-section {{ margin-bottom: 2rem; }}
+        .whales-grid {{ display: grid; grid-template-columns: 1fr; gap: 1rem; }}
+        @media (min-width: 720px) {{
+            .whales-grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+        }}
+        @media (min-width: 1100px) {{
+            .whales-grid {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+        }}
+        .whales-card {{ background: var(--card-bg); border-radius: 12px; padding: 14px 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); border: 1px solid rgba(128,128,128,0.12); }}
+        .whales-person {{ font-weight: 650; margin-bottom: 2px; }}
+        .whales-role {{ font-size: 0.82rem; color: var(--muted); line-height: 1.35; margin-bottom: 8px; }}
+        .whales-latest {{ font-size: 0.95rem; }}
+        .whales-link {{ color: var(--accent); text-decoration: none; }}
+        .whales-link:hover {{ text-decoration: underline; }}
+        .whales-meta {{ color: var(--muted); font-size: 0.85rem; margin-top: 6px; }}
+        .whales-snippet {{ color: var(--muted); font-size: 0.9rem; margin-top: 8px; line-height: 1.4; }}
+        .whales-note {{ margin-top: 10px; }}
+        .sentiment-box {{ background: var(--card-bg); border-radius: 14px; padding: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); display: flex; flex-direction: column; align-items: center; text-align: center; margin: 0 auto 2.5rem; max-width: 300px; border: 1px solid rgba(128,128,128,0.1); }}
+        .sentiment-title {{ font-size: 0.9rem; font-weight: 600; color: var(--muted); margin-bottom: 5px; }}
+        .sentiment-value {{ font-size: 2.2rem; font-weight: 800; line-height: 1; margin: 5px 0; }}
+        .sentiment-label {{ font-size: 0.75rem; font-weight: 700; color: white; padding: 2px 10px; border-radius: 20px; text-transform: uppercase; margin-bottom: 12px; }}
+        .sentiment-meter {{ width: 100%; height: 6px; background: rgba(0,0,0,0.05); border-radius: 10px; overflow: hidden; }}
+        .sentiment-bar {{ height: 100%; transition: width 0.5s ease-out; }}
+        .macro-section {{ margin-bottom: 2.5rem; }}
+        .macro-card {{ background: var(--card-bg); border-radius: 14px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.06); border: 1px solid rgba(128,128,128,0.15); }}
+        .macro-table {{ width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; }}
+        .macro-table th {{ background: rgba(0,0,0,0.02); padding: 12px 15px; font-weight: 600; color: var(--muted); border-bottom: 1px solid rgba(128,128,128,0.15); }}
+        .macro-table td {{ padding: 12px 15px; border-bottom: 1px solid rgba(128,128,128,0.1); }}
+        .macro-table tr:last-child td {{ border-bottom: none; }}
+        .macro-type {{ font-size: 0.75rem; color: var(--accent); background: rgba(0,123,255,0.1); padding: 2px 6px; border-radius: 4px; font-weight: 500; }}
+        .impact-tag {{ font-size: 0.7rem; font-weight: 700; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; color: white; }}
+        .impact-high {{ background: #e74c3c; }}
+        .impact-medium {{ background: #f39c12; }}
+        .impact-low {{ background: #95a5a6; }}
+        .macro-desc {{ color: var(--muted); font-size: 0.85rem; line-height: 1.4; }}
     </style>
 </head>
 <body>
@@ -1117,10 +1867,14 @@ class CryptoNewsCrawler:
             <div class="stats">{today.isoformat()} · 今日更新 {len(today_news)} 条 · 总计存储 {len(self.news_data)} 条</div>
         </header>
 
+        {quant_block}
+        {sentiment_block}
         {charts_block}
         {forecast_block}
         {trend_block}
+        {macro_block}
         {events_block}
+        {whales_block}
 
         <h2 class="section-title">今日资讯</h2>
         {"".join(self._format_article(item) for item in today_news) if today_news else '<div class="no-news">今日暂无新资讯。</div>'}

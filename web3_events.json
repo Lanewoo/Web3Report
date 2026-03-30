@@ -1,0 +1,75 @@
+[
+    {
+        "name": "EthCC 2026（Ethereum Community Conference）",
+        "start": "2026-03-30",
+        "end": "2026-04-02",
+        "location": "Palais des Festivals, Cannes, France",
+        "url": "http://ethcc.io/",
+        "highlights": [
+            "EthCC 是欧洲规模最大、历史最长的年度以太坊社区活动，覆盖技术与社区主题。",
+            "活动为期 4 天（3/30-4/2），包含多场会议、网络交流与学习。",
+            "EthCC Week 亮点包含 Aperitivo（3/30）、Kaiko 联合论坛 The Agora（3/31）与官方 After Party（4/2）。",
+            "官方内置活动包括 Aave DeFi Day、EVA、Chain Patrol、Issuance Roundtable、Capture The Flag 等。"
+        ]
+    },
+    {
+        "name": "Paris Blockchain Week 2026",
+        "start": "2026-04-15",
+        "end": "2026-04-16",
+        "location": "Carrousel du Louvre, Paris, France",
+        "url": "https://parisblockchainweek.com/",
+        "highlights": [
+            "主题：The Bridge Between TradFi and Digital Assets。",
+            "面向机构落地与监管框架、托管、跨境结算与市场结构等议题。",
+            "定位为欧洲数字资产与机构级投资者的“决策者密度”论坛。"
+        ]
+    },
+    {
+        "name": "Hong Kong Web3 Festival 2026",
+        "start": "2026-04-20",
+        "end": "2026-04-23",
+        "location": "Hong Kong Convention and Exhibition Centre (HKCEC), Hong Kong",
+        "url": "https://group.hashkey.com/en/newsroom/hong-kong-web3-festival-2026",
+        "highlights": [
+            "时间：4/20-4/23，地点：HKCEC。",
+            "由 Wanxiang Blockchain Labs 与 HashKey Group 联合举办、W3ME 组织。",
+            "定位为亚洲顶级 Web3/加密产业聚会，聚合政策趋势与行业交流。"
+        ]
+    },
+    {
+        "name": "Consensus Miami 2026",
+        "start": "2026-05-05",
+        "end": "2026-05-07",
+        "location": "Miami Beach Convention Center and various locations in Miami Beach, Florida, USA",
+        "url": "https://consensus.coindesk.com/faq/",
+        "highlights": [
+            "时间：5/5-5/7，地点在 Miami Beach Convention Center 及周边场地。",
+            "官方 FAQ 描述：注册包含 tradeshow、sessions、events 与 receptions（随 pass 等级与容量限制）。",
+            "适合关注行业机构动态、产品与生态进展的参与者。"
+        ]
+    },
+    {
+        "name": "TOKEN2049（Singapore）2026",
+        "start": "2026-10-07",
+        "end": "2026-10-08",
+        "location": "Marina Bay Sands, Singapore",
+        "url": "https://sgt2049.com/",
+        "highlights": [
+            "官方页面公布：10/7-10/8，Marina Bay Sands（新加坡）。",
+            "强调 25,000+ attendees、7,000+ companies、300+ speakers、500+ exhibitors。",
+            "适合做产业对接与寻找合作机会。"
+        ]
+    },
+    {
+        "name": "WebX 2026（Tokyo）",
+        "start": "2026-07-13",
+        "end": "2026-07-14",
+        "location": "The Prince Park Tower Tokyo, Japan",
+        "url": "https://events.bizzabo.com/785866",
+        "highlights": [
+            "时间：7/13-7/14，地点：The Prince Park Tower Tokyo。",
+            "官方介绍：WebX 覆盖 cryptocurrencies、blockchain、Web3 infrastructure、NFTs、DeFi 与 AI 等主题。",
+            "定位为日本与国际行业的 Web3 交流平台。"
+        ]
+    }
+]
